@@ -2,7 +2,7 @@ import { GoogleGenAI, Modality, Type } from "@google/genai";
 import { SolutionItem } from "../types";
 
 // Initialize Gemini
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 /**
  * Interface for the dual-script output
