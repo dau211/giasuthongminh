@@ -1,5 +1,5 @@
 {
-  "name": "gia-sư-thông-minh-pb9",
+  "name": "copy-of-gia-sư-thông-minh-pb12---ổn",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -14,7 +14,8 @@
     "react-dom": "^19.2.0",
     "@google/genai": "^1.30.0",
     "html2canvas": "^1.4.1",
-    "jspdf": "^2.5.1"
+    "jspdf": "^2.5.1",
+    "docx": "8.5.0"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

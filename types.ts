@@ -22,7 +22,8 @@ export interface SolutionItem {
   questionReading: string; // Phonetic/IUPAC for Audio
   solutionDisplay: string; // Clean text for UI (No markdown bold, formatted)
   solutionReading: string; // Phonetic/IUPAC for Audio
-  illustrationSVG?: string; // NEW: Optional SVG code for chemical structures
+  imagePrompt?: string; // NEW: The prompt used to generate the image
+  illustrationImage?: string; // NEW: Base64 string of the generated image
 }
 
 export interface ProcessingResult {

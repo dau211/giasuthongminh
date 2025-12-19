@@ -4,6 +4,25 @@ import { VideoRecommendation, SolutionItem, FileData } from '../types';
 import { synthesizeSpeech, getAudioDataUrl } from '../services/geminiService';
 import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
+import { Document, Packer, Paragraph, TextRun, ImageRun } from 'docx';
+
+// Polyfill Enums locally to prevent "module does not provide export" errors with CDNs
+const HeadingLevel = {
+  HEADING_1: "Heading1" as any,
+  HEADING_2: "Heading2" as any,
+  TITLE: "Title" as any,
+};
+
+const AlignmentType = {
+  START: "start" as any,
+  END: "end" as any,
+  CENTER: "center" as any,
+  BOTH: "both" as any,
+  DISTRIBUTE: "distribute" as any,
+  LEFT: "left" as any,
+  RIGHT: "right" as any,
+  JUSTIFIED: "both" as any,
+};
 
 interface PlayerProps {
   script: string;
@@ -20,12 +39,35 @@ interface SolutionCardProps {
   onPlayRequest: (title: string, text: string, url: string) => void;
 }
 
-// Custom Text Renderer for Scientific Formulas
+// Custom Text Renderer for Scientific Formulas AND Bold Formatting
 const ScientificText: React.FC<{ text: string; className?: string }> = ({ text, className = "" }) => {
-  const cleanText = text.replace(/\*\*/g, '');
-  const regex = /([A-Z][a-z]?|\))(\d+)/g;
+  if (!text) return null;
   
-  const parts = cleanText.split(regex);
+  // Regex to split by bold markers (**)
+  const parts = text.split(/(\*\*.*?\*\*)/g);
+  
+  return (
+    <span className={className}>
+      {parts.map((part, index) => {
+        if (part.startsWith('**') && part.endsWith('**')) {
+          // Render Bold Text (remove **)
+          const content = part.slice(2, -2);
+          return <b key={index} className="text-emerald-400 font-bold"><ChemicalFormula text={content} /></b>;
+        } else {
+          // Render Normal Text
+          return <span key={index}><ChemicalFormula text={part} /></span>;
+        }
+      })}
+    </span>
+  );
+};
+
+// Helper for just Chemical Formulas inside a string
+const ChemicalFormula: React.FC<{ text: string }> = ({ text }) => {
+  if (!text) return null;
+
+  const regex = /([A-Z][a-z]?|\))(\d+)/g;
+  const parts = text.split(regex);
   const elements = [];
   
   for (let i = 0; i < parts.length; i += 3) {
@@ -45,8 +87,7 @@ const ScientificText: React.FC<{ text: string; className?: string }> = ({ text, 
       );
     }
   }
-
-  return <span className={className}>{elements}</span>;
+  return <>{elements}</>;
 };
 
 const SolutionCard: React.FC<SolutionCardProps> = ({ item, index, onPlayRequest }) => {
@@ -127,13 +168,16 @@ const SolutionCard: React.FC<SolutionCardProps> = ({ item, index, onPlayRequest 
                <ScientificText text={item.solutionDisplay} />
              </div>
 
-             {item.illustrationSVG && (
-               <div className="mt-4 p-4 bg-white/5 rounded-lg border border-slate-700/50 flex flex-col items-center">
-                  <span className="text-xs text-slate-500 mb-2 uppercase tracking-wide">Hình minh họa AI</span>
-                  <div 
-                    className="w-full max-w-[300px] text-slate-200"
-                    dangerouslySetInnerHTML={{ __html: item.illustrationSVG }} 
-                  />
+             {item.illustrationImage && (
+               <div className="mt-4 p-4 bg-white rounded-lg border border-slate-700/50 flex flex-col items-center shadow-inner">
+                  <span className="text-xs text-slate-500 mb-2 uppercase tracking-wide w-full text-center border-b pb-1">Hình minh họa (Gemini Image Gen)</span>
+                  <div className="w-full flex justify-center mt-2">
+                    <img 
+                      src={`data:image/png;base64,${item.illustrationImage}`}
+                      alt="Chemical Structure"
+                      className="max-w-full h-auto object-contain max-h-[300px]"
+                    />
+                  </div>
                </div>
              )}
           </div>
@@ -149,6 +193,7 @@ const Player: React.FC<PlayerProps> = ({ script, audioUrl, relatedVideos, soluti
   const [activeTitle, setActiveTitle] = useState("Nội dung gốc");
   const [isShowingSolution, setIsShowingSolution] = useState(false);
   const [isGeneratingPDF, setIsGeneratingPDF] = useState(false);
+  const [isGeneratingWord, setIsGeneratingWord] = useState(false);
   const printRef = useRef<HTMLDivElement>(null);
 
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -225,6 +270,164 @@ const Player: React.FC<PlayerProps> = ({ script, audioUrl, relatedVideos, soluti
     setActiveScript(script);
     setActiveAudioUrl(audioUrl);
     setIsShowingSolution(false);
+  };
+
+  // --- WORD EXPORT LOGIC ---
+  const handleDownloadWord = async () => {
+    setIsGeneratingWord(true);
+    try {
+      const children = [];
+
+      // 1. Title
+      children.push(new Paragraph({
+        text: "GIA SƯ THÔNG MINH - TÀI LIỆU HỌC TẬP",
+        heading: HeadingLevel.HEADING_1,
+        alignment: AlignmentType.CENTER,
+      }));
+      children.push(new Paragraph({ text: "" })); // Spacer
+
+      // Helper to parse text into TextRuns with Bold and Chemical Subscripts
+      const createFormattedRuns = (text: string, isBoldContext = false): TextRun[] => {
+        if (!text) return [];
+        const runs: TextRun[] = [];
+        // Regex for Bold (**...**)
+        const boldParts = text.split(/(\*\*.*?\*\*)/g);
+
+        boldParts.forEach(part => {
+          let isBold = isBoldContext;
+          let content = part;
+
+          if (part.startsWith('**') && part.endsWith('**')) {
+            isBold = true;
+            content = part.slice(2, -2);
+          }
+
+          // Regex for Chemical Formulas (e.g., H2SO4 -> H, 2, SO, 4)
+          // Matches a letter followed by digits
+          const regex = /([a-zA-Z\)])(\d+)/g;
+          let lastIndex = 0;
+          let match;
+
+          while ((match = regex.exec(content)) !== null) {
+            // Text before the number
+            const prefix = content.slice(lastIndex, match.index);
+            if (prefix) {
+              runs.push(new TextRun({ text: prefix, bold: isBold }));
+            }
+            
+            // The Letter before the number (e.g., "H" in H2)
+            runs.push(new TextRun({ text: match[1], bold: isBold }));
+            
+            // The Number (Subscript)
+            runs.push(new TextRun({ 
+              text: match[2], 
+              subScript: true,
+              bold: isBold
+            }));
+
+            lastIndex = regex.lastIndex;
+          }
+
+          // Remaining text after last match
+          const suffix = content.slice(lastIndex);
+          if (suffix) {
+            runs.push(new TextRun({ text: suffix, bold: isBold }));
+          }
+        });
+
+        return runs;
+      };
+
+      // 2. Solutions
+      solutions.forEach((sol, index) => {
+        // Question Header
+        children.push(new Paragraph({
+          children: [
+            new TextRun({ text: `BÀI TẬP ${index + 1}: `, bold: true, color: "2E7D32" }), // Green color
+          ],
+          spacing: { before: 200 }
+        }));
+
+        children.push(new Paragraph({
+          children: createFormattedRuns(sol.questionDisplay || ""),
+          spacing: { after: 100 }
+        }));
+
+        // Solution Header
+        children.push(new Paragraph({
+          children: [
+            new TextRun({ text: "LỜI GIẢI CHI TIẾT:", bold: true, color: "1565C0" }), // Blue
+          ],
+        }));
+
+        // Solution Body (Split by newlines for paragraphs)
+        const lines = (sol.solutionDisplay || "").split('\n');
+        lines.forEach(line => {
+          if (line.trim()) {
+            children.push(new Paragraph({
+              children: createFormattedRuns(line),
+              spacing: { after: 100 },
+              bullet: line.trim().startsWith('-') ? { level: 0 } : undefined
+            }));
+          }
+        });
+
+        // Illustration in Word: Supported via ImageRun since we have Base64
+        if (sol.illustrationImage) {
+             children.push(new Paragraph({
+                text: "Hình minh họa:",
+                spacing: { before: 100 }
+             }));
+             
+             try {
+               children.push(new Paragraph({
+                 children: [
+                   new ImageRun({
+                     data: sol.illustrationImage, // Base64 string
+                     transformation: {
+                       width: 300,
+                       height: 300,
+                     },
+                     type: "png" // Assuming Gemini returns PNG/JPEG compatible bytes
+                   }),
+                 ],
+                 alignment: AlignmentType.CENTER,
+                 spacing: { after: 100 }
+               }));
+             } catch (imgError) {
+               console.error("Error embedding image into Word:", imgError);
+               children.push(new Paragraph({
+                 text: "[Không thể chèn ảnh minh họa]",
+                 italics: true,
+                 color: "FF0000"
+               }));
+             }
+        }
+        
+        children.push(new Paragraph({ text: "________________________________________________________", alignment: AlignmentType.CENTER }));
+      });
+
+      const doc = new Document({
+        sections: [{
+          properties: {},
+          children: children,
+        }],
+      });
+
+      const blob = await Packer.toBlob(doc);
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = "GiaSuThongMinh_LoiGiai.docx";
+      a.click();
+      window.URL.revokeObjectURL(url);
+
+    } catch (e) {
+      console.error("Word export failed", e);
+      alert("Lỗi khi xuất file Word.");
+    } finally {
+      setIsGeneratingWord(false);
+    }
   };
 
   const handleDownloadPDF = async () => {
@@ -437,12 +640,16 @@ const Player: React.FC<PlayerProps> = ({ script, audioUrl, relatedVideos, soluti
                   <ScientificText text={item.solutionDisplay} />
                 </div>
                 
-                {item.illustrationSVG && (
-                   <div className="mt-4 flex justify-center bg-white border border-slate-200 rounded p-2">
-                      <div 
-                        className="w-[150px]"
-                        dangerouslySetInnerHTML={{ __html: item.illustrationSVG }} 
-                      />
+                {item.illustrationImage && (
+                   <div className="mt-4 flex flex-col items-center bg-white border border-slate-200 rounded p-2">
+                      <span className="text-[10px] text-slate-500 mb-1 uppercase tracking-wide w-full text-center border-b pb-1">Minh họa (AI Generated)</span>
+                      <div className="w-full flex justify-center mt-1">
+                         <img 
+                           src={`data:image/png;base64,${item.illustrationImage}`}
+                           alt="Illustration"
+                           className="max-h-[250px] object-contain"
+                         />
+                      </div>
                    </div>
                 )}
               </div>
@@ -564,18 +771,32 @@ const Player: React.FC<PlayerProps> = ({ script, audioUrl, relatedVideos, soluti
               </a>
             )}
 
+            {/* WORD DOWNLOAD BUTTON */}
+            <button
+              onClick={handleDownloadWord}
+              disabled={isGeneratingWord}
+              className="col-span-1 bg-blue-700 hover:bg-blue-600 text-white py-3 rounded-lg font-medium transition-all shadow-lg flex items-center justify-center text-sm"
+            >
+              {isGeneratingWord ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <FileTextIcon className="w-4 h-4 mr-2" />
+              )}
+              {isGeneratingWord ? "Đang tạo..." : "Tải Word (.docx)"}
+            </button>
+
             {/* PDF DOWNLOAD BUTTON */}
             <button
               onClick={handleDownloadPDF}
               disabled={isGeneratingPDF}
-              className="col-span-2 bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white py-3 rounded-lg font-medium transition-all shadow-lg shadow-red-500/20 flex items-center justify-center"
+              className="col-span-1 bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white py-3 rounded-lg font-medium transition-all shadow-lg flex items-center justify-center text-sm"
             >
               {isGeneratingPDF ? (
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
               ) : (
                 <Printer className="w-4 h-4 mr-2" />
               )}
-              {isGeneratingPDF ? "Đang tạo PDF..." : "Tải PDF Bài Học (Kèm Lời Giải)"}
+              {isGeneratingPDF ? "Đang tạo..." : "Tải PDF"}
             </button>
           </div>
         </div>

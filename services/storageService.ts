@@ -98,12 +98,15 @@ export const getHistory = async (): Promise<HistoryEntry[]> => {
       request.onsuccess = () => {
         const results = request.result as CachedItem[];
         // Map to lighter objects for the UI list
-        const history: HistoryEntry[] = results.map(item => ({
-          id: item.id,
-          timestamp: item.timestamp,
-          // Create a title from the first line or first 50 chars of the script
-          title: item.data.script.split('\n')[0].substring(0, 60) + (item.data.script.length > 60 ? '...' : '')
-        })).sort((a, b) => b.timestamp - a.timestamp); // Sort newest first
+        const history: HistoryEntry[] = results.map(item => {
+           const safeScript = item.data.script || '';
+           const title = safeScript.split('\n')[0].substring(0, 60) + (safeScript.length > 60 ? '...' : '');
+           return {
+             id: item.id,
+             timestamp: item.timestamp,
+             title: title || 'Nội dung không có tiêu đề'
+           };
+        }).sort((a, b) => b.timestamp - a.timestamp); // Sort newest first
         
         resolve(history);
       };

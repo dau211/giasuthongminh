@@ -221,7 +221,7 @@ const InputSection: React.FC<InputSectionProps> = ({
             </>
           ) : (
             <>
-              <span>Chuyển Đổi Sang Giọng Nói</span>
+              <span>Phân tích nội dung</span>
               <div className="bg-white/20 p-1 rounded-full">
                 <FileText className="w-4 h-4" />
               </div>

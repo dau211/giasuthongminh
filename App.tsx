@@ -28,233 +28,200 @@ const App: React.FC = () => {
   };
 
   const loadFromHistory = async (id: string) => {
-    try {
+    const cached = await getFromCache(id);
+    if (cached) {
+      setResult(cached);
+      setIsCachedResult(true);
+      setAppState(AppState.IDLE);
       setShowHistory(false);
-      setStatusMessage('Đang tải từ lịch sử...');
-      setAppState(AppState.ANALYZING); // Use temporary state for loader
-
-      const cachedResult = await getFromCache(id);
-      
-      if (cachedResult) {
-        // Regenerate Blob URL from Base64
-        const restoredAudioUrl = cachedResult.audioBase64 ? getAudioDataUrl(cachedResult.audioBase64) : null;
-        
-        // Short timeout for smoother transition
-        setTimeout(() => {
-          setResult({
-            ...cachedResult,
-            audioBase64: restoredAudioUrl
-          });
-          setIsCachedResult(true);
-          setAppState(AppState.PLAYING);
-        }, 500);
-      } else {
-        alert("Không tìm thấy dữ liệu bài học này.");
-        setAppState(AppState.IDLE);
-      }
-    } catch (error) {
-      console.error(error);
-      setAppState(AppState.ERROR);
-      setStatusMessage("Lỗi khi tải lịch sử.");
     }
   };
 
-  const processContent = async () => {
+  const handleProcess = async () => {
+    if (mode === InputMode.TEXT && !textInput.trim()) return;
+    if (mode === InputMode.FILE && !file) return;
+
+    setAppState(AppState.ANALYZING);
+    setStatusMessage('Đang phân tích tài liệu...');
+    setResult(null);
+
     try {
-      setAppState(AppState.ANALYZING);
-      
-      let base64File = undefined;
-      let mimeType = undefined;
-      let inputContentForHash = '';
+      let contentHash = '';
+      let fileBase64: string | undefined = undefined;
+      let mimeType: string | undefined = undefined;
 
-      // Prepare input data
       if (mode === InputMode.FILE && file) {
-        setStatusMessage('Đang xử lý file...');
-        base64File = await readFileToBase64(file.file);
+        fileBase64 = await readFileToBase64(file.file);
+        contentHash = await computeContentHash(fileBase64);
         mimeType = file.mimeType;
-        inputContentForHash = base64File; // Hash the file content
       } else {
-        inputContentForHash = textInput.trim(); // Hash the text content
+        contentHash = await computeContentHash(textInput);
       }
 
-      // --- CACHE CHECK START ---
-      setStatusMessage('Đang kiểm tra bộ nhớ đệm...');
-      const contentHash = await computeContentHash(inputContentForHash);
-      const cachedResult = await getFromCache(contentHash);
-
-      if (cachedResult) {
-        console.log("Cache hit! Loading from storage.");
-        // If audio url is blob/local, we might need to regenerate the blob URL object 
-        // because blob URLs expire when the page refreshes.
-        // However, we stored base64 in `audioBase64` inside ProcessingResult, so we can regenerate the URL.
-        const restoredAudioUrl = cachedResult.audioBase64 ? getAudioDataUrl(cachedResult.audioBase64) : null;
-        
-        // Use a timeout to simulate a tiny loading phase so the UI doesn't flash too fast
-        setTimeout(() => {
-            setResult({
-                ...cachedResult,
-                audioBase64: restoredAudioUrl // Update URL just in case
-            });
-            setIsCachedResult(true);
-            setAppState(AppState.PLAYING);
-        }, 800);
-        return;
+      // Check cache
+      const cached = await getFromCache(contentHash);
+      if (cached) {
+        setResult(cached);
+        setIsCachedResult(true);
+        setAppState(AppState.IDLE);
+        return; 
       }
-      // --- CACHE CHECK END ---
 
-      setIsCachedResult(false);
-      setStatusMessage('Gia sư AI Studio đang phân tích tài liệu...');
-
-      // Step 1: Analyze & Generate DUAL Script (Display vs Reading)
+      // Step 1: Generate Script (OCR)
+      setStatusMessage('Đang đọc nội dung (OCR)...');
       const { displayScript, readingScript } = await generateReadingScript(
         mode === InputMode.TEXT ? textInput : '',
-        base64File,
+        fileBase64,
         mimeType
       );
 
-      setAppState(AppState.SYNTHESIZING);
-      setStatusMessage('Đang tạo giọng đọc chuẩn Anh-Việt và giải bài tập...');
+      // Step 2: Analyze and Solve
+      setStatusMessage('Đang giải bài tập & vẽ hình minh họa...');
+      const solutions = await analyzeAndSolve(displayScript, fileBase64, mimeType); 
 
-      // Step 2, 3 & 4: TTS (using readingScript), Video suggestions and Solutions (using displayScript)
-      const [audioBase64, relatedVideos, solutions] = await Promise.all([
-        synthesizeSpeech(readingScript), // Use the specialized script for audio
-        getRelatedVideoQueries(displayScript), // Use original content for context
-        analyzeAndSolve(displayScript) // Use original content for solving
-      ]);
+      // Step 3: Videos
+      setStatusMessage('Đang tìm video tham khảo...');
+      const relatedVideos = await getRelatedVideoQueries(displayScript);
 
-      // Note: We store the raw base64 string in the result object for caching, 
-      // but convert to URL for playback.
-      
-      const finalResult: ProcessingResult = {
-        script: displayScript, // Show original content in UI
-        audioBase64: audioBase64, // Keep base64 for storage
+      // Step 4: TTS
+      setStatusMessage('Đang tạo giọng đọc...');
+      const audioBase64 = await synthesizeSpeech(readingScript);
+
+      const newResult: ProcessingResult = {
+        script: displayScript,
+        audioBase64,
         relatedVideos,
         solutions
       };
 
-      // --- SAVE TO CACHE ---
-      await saveToCache(contentHash, finalResult);
+      // Save to cache
+      await saveToCache(contentHash, newResult);
 
-      // Create playable URL
-      const audioUrl = getAudioDataUrl(audioBase64);
-      
-      setResult({
-          ...finalResult,
-          audioBase64: audioUrl
-      });
-      
-      setAppState(AppState.PLAYING);
+      setResult(newResult);
+      setAppState(AppState.IDLE);
 
     } catch (error) {
       console.error(error);
       setAppState(AppState.ERROR);
-      setStatusMessage(error instanceof Error ? error.message : 'Đã xảy ra lỗi không xác định.');
+      setStatusMessage('Có lỗi xảy ra: ' + (error as Error).message);
     }
   };
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 font-sans selection:bg-blue-500 selection:text-white">
-      {/* Background Gradients */}
-      <div className="fixed inset-0 pointer-events-none overflow-hidden">
-        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-900/20 rounded-full blur-[120px]"></div>
-        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-indigo-900/20 rounded-full blur-[120px]"></div>
-      </div>
-
-      <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-        {/* Header */}
-        <header className="relative mb-16 space-y-4">
-          <div className="absolute top-0 right-0">
-             <button
-               onClick={() => setShowHistory(true)}
-               className="flex items-center px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-full border border-slate-700 transition-all hover:shadow-lg text-sm font-medium"
-             >
-               <HistoryIcon className="w-4 h-4 mr-2 text-blue-400" />
-               Lịch Sử
-             </button>
-          </div>
-
-          <div className="text-center">
-            <div className="inline-flex items-center justify-center p-3 bg-blue-500/10 rounded-2xl mb-4 border border-blue-500/20 shadow-lg shadow-blue-500/10">
-              <BookOpen className="w-8 h-8 text-blue-400 mr-3" />
-              <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight text-white">
-                Gia Sư <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-indigo-400">Thông Minh</span>
-              </h1>
+    <div className="min-h-screen bg-slate-950 text-slate-100 selection:bg-blue-500/30">
+      {/* Header */}
+      <header className="fixed top-0 left-0 right-0 z-50 bg-slate-900/80 backdrop-blur-md border-b border-slate-800">
+        <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+          <div className="flex items-center space-x-3">
+            <div className="bg-gradient-to-tr from-blue-600 to-indigo-600 p-2 rounded-lg">
+              <BookOpen className="w-6 h-6 text-white" />
             </div>
-            <p className="max-w-2xl mx-auto text-lg text-slate-400">
-              Tải lên tài liệu pdf, Word, Hình ảnh để Gia sư phân tích và hướng dẫn học tập
-            </p>
+            <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-indigo-400 hidden sm:block">
+              Gia Sư Thông Minh
+            </h1>
           </div>
-        </header>
+          
+          <div className="flex items-center space-x-2">
+            <button
+              onClick={() => setShowHistory(true)}
+              className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors flex items-center space-x-2"
+              title="Lịch sử"
+            >
+              <HistoryIcon className="w-5 h-5" />
+              <span className="hidden sm:inline text-sm font-medium">Lịch sử</span>
+            </button>
+            <div className="h-6 w-px bg-slate-700 mx-2"></div>
+            <div className="flex items-center space-x-2 px-3 py-1.5 bg-slate-800 rounded-full border border-slate-700">
+              <Sparkles className="w-4 h-4 text-emerald-400" />
+              <span className="text-xs font-medium text-slate-300">Gemini 2.5 Flash</span>
+            </div>
+          </div>
+        </div>
+      </header>
 
-        {/* History Sidebar */}
+      {/* Main Content */}
+      <main className="pt-24 pb-12 px-4 max-w-7xl mx-auto">
         <HistoryList 
           isOpen={showHistory} 
-          onClose={() => setShowHistory(false)} 
+          onClose={() => setShowHistory(false)}
           onSelect={loadFromHistory}
         />
 
-        {/* Status Overlay for Loading */}
-        {(appState === AppState.ANALYZING || appState === AppState.SYNTHESIZING) && (
-          <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-slate-900/80 backdrop-blur-md transition-opacity">
-            <div className="relative">
-              <div className="w-20 h-20 border-4 border-slate-700 border-t-blue-500 rounded-full animate-spin"></div>
-              <div className="absolute inset-0 flex items-center justify-center">
-                <Sparkles className="w-6 h-6 text-blue-400 animate-pulse" />
-              </div>
+        {!result && appState !== AppState.ERROR ? (
+          <div className="animate-fade-in space-y-12">
+            <div className="text-center space-y-4 max-w-2xl mx-auto mt-10">
+              <h2 className="text-4xl md:text-5xl font-bold text-white tracking-tight">
+                Gia Sư <span className="text-blue-500">Thông Minh</span>
+              </h2>
+              <p className="text-slate-400 text-lg leading-relaxed">
+                Tải lên tài liệu pdf, Word, Hình ảnh để Gia sư phân tích và hướng dẫn học tập
+              </p>
             </div>
-            <h2 className="mt-8 text-xl font-semibold text-white">{statusMessage}</h2>
-            <p className="mt-2 text-slate-400 text-sm">Vui lòng không tắt trình duyệt</p>
+
+            <div className="relative">
+              {appState !== AppState.IDLE && (
+                 <div className="absolute inset-0 z-10 bg-slate-950/80 backdrop-blur-sm flex flex-col items-center justify-center rounded-xl animate-fade-in">
+                    <div className="relative mb-8">
+                       <div className="w-20 h-20 border-4 border-slate-700 border-t-blue-500 rounded-full animate-spin"></div>
+                       <div className="absolute inset-0 flex items-center justify-center">
+                         <Sparkles className="w-8 h-8 text-blue-400 animate-pulse" />
+                       </div>
+                    </div>
+                    <p className="text-xl font-medium text-blue-400 animate-pulse">{statusMessage}</p>
+                    <p className="text-sm text-slate-500 mt-2">Quá trình này có thể mất vài giây...</p>
+                 </div>
+              )}
+              
+              <InputSection
+                mode={mode}
+                setMode={setMode}
+                text={textInput}
+                setText={setTextInput}
+                file={file}
+                setFile={setFile}
+                isProcessing={appState !== AppState.IDLE}
+                onProcess={handleProcess}
+              />
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-6">
+            {appState === AppState.ERROR ? (
+               <div className="p-6 bg-red-900/20 border border-red-800 rounded-xl text-center">
+                  <p className="text-red-400 text-lg mb-4">{statusMessage}</p>
+                  <button 
+                    onClick={handleReset}
+                    className="px-6 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg font-medium transition-colors"
+                  >
+                    Thử lại
+                  </button>
+               </div>
+            ) : (
+              result && (
+                <>
+                  {isCachedResult && (
+                    <div className="bg-blue-500/10 border border-blue-500/20 text-blue-400 px-4 py-2 rounded-lg text-sm flex items-center justify-center mb-4 w-fit mx-auto">
+                      <Database className="w-4 h-4 mr-2" />
+                      Đã tải lại kết quả từ bộ nhớ đệm
+                    </div>
+                  )}
+                  <Player
+                    script={result.script}
+                    audioUrl={result.audioBase64 ? getAudioDataUrl(result.audioBase64) : null}
+                    relatedVideos={result.relatedVideos}
+                    solutions={result.solutions}
+                    onReset={handleReset}
+                    fileData={file}
+                  />
+                </>
+              )
+            )}
           </div>
         )}
-
-        {/* Main Interface */}
-        <main className="transition-all duration-500">
-          {appState === AppState.ERROR ? (
-            <div className="max-w-lg mx-auto bg-red-500/10 border border-red-500/50 rounded-xl p-6 text-center">
-              <h3 className="text-red-400 font-bold text-lg mb-2">Đã xảy ra lỗi</h3>
-              <p className="text-slate-300 mb-6">{statusMessage}</p>
-              <button 
-                onClick={handleReset}
-                className="px-6 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-white font-medium transition-colors"
-              >
-                Thử lại
-              </button>
-            </div>
-          ) : result && appState === AppState.PLAYING ? (
-            <div className="space-y-4">
-                {isCachedResult && (
-                    <div className="max-w-5xl mx-auto flex items-center justify-center p-2 bg-emerald-500/10 border border-emerald-500/20 rounded-lg text-emerald-400 text-sm animate-fade-in">
-                        <Database className="w-4 h-4 mr-2" />
-                        <span>Nội dung được tải ngay lập tức từ kho lưu trữ (Không cần phân tích lại).</span>
-                    </div>
-                )}
-                <Player 
-                  script={result.script}
-                  audioUrl={result.audioBase64}
-                  relatedVideos={result.relatedVideos}
-                  solutions={result.solutions}
-                  onReset={handleReset}
-                  fileData={file} // Pass the file data to display raw image/pdf
-                />
-            </div>
-          ) : (
-            <InputSection
-              mode={mode}
-              setMode={setMode}
-              text={textInput}
-              setText={setTextInput}
-              file={file}
-              setFile={setFile}
-              isProcessing={appState !== AppState.IDLE}
-              onProcess={processContent}
-            />
-          )}
-        </main>
-
-        <footer className="mt-20 text-center text-slate-600 text-sm">
+      </main>
+       <footer className="mt-20 text-center text-slate-600 text-sm">
           <p>Phát triển bởi nhóm học sinh THPT Đào Duy Từ</p>
         </footer>
-      </div>
     </div>
   );
 };
